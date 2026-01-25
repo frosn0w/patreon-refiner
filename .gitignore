@@ -1,0 +1,17 @@
+# 依赖库
+node_modules/
+
+# 运行生成的临时与输出文件
+public_outputs/
+temp_*.html
+
+# 系统与缓存文件
+.DS_Store
+Thumbs.db
+npm-debug.log*
+
+# Docker 缓存 (如果本地构建过)
+.docker_cache/
+
+# 环境配置文件 (如果你将来使用 .env)
+.env
