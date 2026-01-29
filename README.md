@@ -7,4 +7,25 @@
 - **中文字体支持**: 预装 Noto Sans CJK 与 Color Emoji，拒绝 PDF 方块。
 - **资源优化**: 采用 `dumb-init` 管理进程，任务处理完即释放内存。
 - **简易鉴权**: 环境变量控制的 Token 访问机制。
-- **自动部署**: setup.sh
+
+## 🚀 快速部署 (VPS)
+### 1. 克隆仓库
+```bash
+git clone https://github.com/frosn0w/Patreon_Refiner
+cd patreon-refiner
+chmod +x setup.sh
+./setup.sh
+```
+
+### 2. 自动化安装
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+### 3. 配置密码
+编辑目录下的 .env 文件，修改你的访问密码
+```bash
+vi .env
+```
+ACCESS_TOKEN=你的密码

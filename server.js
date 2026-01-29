@@ -295,7 +295,7 @@ const Converter = {
 
     try {
       const isArmUbuntu = process.platform === "linux" && process.arch === "arm64";
-      const ubuntuChrome = "/usr/bin/chromium-browser";
+      const ubuntuChrome = "/usr/bin/chromium";
 
       browser = await chromium.launch({
         executablePath: isArmUbuntu && fs.existsSync(ubuntuChrome) ? ubuntuChrome : undefined,
