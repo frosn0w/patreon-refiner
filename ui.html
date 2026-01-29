@@ -298,6 +298,7 @@
 
             const xhr = new XMLHttpRequest();
             xhr.open('POST', '/upload', true);
+            xhr.setRequestHeader("X-Access-Token", token);
 
             // 监听进度 (不需要复杂后端逻辑)
             xhr.upload.onprogress = (e) => {

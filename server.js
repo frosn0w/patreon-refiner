@@ -402,7 +402,17 @@ const startServer = () => {
       reply.send("Error: ui.html not found.");
     }
   });
+  fastify.addHook('preHandler', async (request, reply) => {
+    if (request.url === '/upload' && request.method === 'POST') {
+      const token = request.headers['x-access-token'];
+      const EXPECTED_TOKEN = process.env.ACCESS_TOKEN || "refiner_default_pwd_888";
 
+      if (token !== EXPECTED_TOKEN) {
+        reply.code(401).send({ success: false, error: "鉴权失败：Access Token 无效" });
+        return reply; // 立即中断请求，不再接收后续文件流
+      }
+    }
+  });
   fastify.post("/upload", async (req, reply) => {
     const EXPECTED_TOKEN = process.env.ACCESS_TOKEN || "";
     const tempPath = path.join(__dirname, `temp_${Date.now()}.html`);
