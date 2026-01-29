@@ -29,7 +29,7 @@ fi
 # 3. 检查并生成示例 .env 文件
 if [ ! -f ".env" ]; then
     echo "未检测到 .env 文件，正在创建默认配置..."
-    echo "MY_SECRET_TOKEN=refiner_default_pwd_888" > .env
+    echo "ACCESS_TOKEN=refiner_default_pwd_888" > .env
     echo -e "${GREEN}警告: 已创建默认密码 'refiner_default_pwd_888'，请稍后在 .env 中修改${NC}"
 fi
 

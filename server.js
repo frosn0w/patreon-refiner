@@ -13,6 +13,7 @@ const cheerio = require("cheerio");
 // =============================================================================
 // 1. 配置与样式 (CONFIGURATION)
 // =============================================================================
+const GLOBAL_TOKEN = process.env.ACCESS_TOKEN;
 const CONFIG = {
   DIRS: { OUT: path.join(__dirname, "public_outputs") },
   SERVER: { PORT: 3000, HOST: "0.0.0.0" },
@@ -21,14 +22,17 @@ const CONFIG = {
         body > *:not(#cleaned-main-content) { display: none !important; }
         :root { --global-borderWidth-thin: 0px !important; }
         #cleaned-main-content {
-            display: flex !important; flex-direction: column; align-items: center; width: 100%;
-            padding-top: ${vars["top-dist"]}; background-color: ${vars["page-bg"]};
+            display: block !important; /* 改变布局模式，避免 flex 撑开高度 */
+            width: 100%;
+            padding-top: ${vars["top-dist"]};
+            background-color: ${vars["page-bg"]};
         }
-        .TAI-title a, a.TAI-title-link { 
+        .TAI-separator { height: 8px; background-color: ${vars["page-bg"]}; width: 100%; }
+        .TAI-title a { 
             font-size: ${vars["title-font-size"]} !important; 
         }
         div[data-tag="post-card"] { background-color: ${vars["card-bg"]} !important; width: 100%; }
-        .TAI-separator { height: 8px; background-color: ${vars["page-bg"]}; width: 100%; }
+        /* 定义分割线样式，并强制 PDF 在此处分页 */
         .TAI-body div div { height: auto !important; }
         .TAI-body h3 { font-size: ${vars["subtitle-font-size"]} !important; }
         .TAI-comment { border-radius: 8px !important; }
@@ -51,6 +55,7 @@ const CONFIG = {
 // 2. 工具模块 (UTILS)
 // =============================================================================
 const Utils = {
+  // 初始化环境
   initEnvironment: () => {
     if (fs.existsSync(CONFIG.DIRS.OUT))
       fs.rmSync(CONFIG.DIRS.OUT, { recursive: true, force: true });
@@ -60,14 +65,17 @@ const Utils = {
     const now = new Date();
     return `BLS${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}.pdf`;
   },
-  safeRemove: (el, upLevel = 0) => {
-    let target = el;
+  // 安全移除工具
+  safeRemove: ($el, upLevel = 0) => {
+    let target = $el;
     for (let i = 0; i < upLevel; i++) {
-      if (target?.parentElement) target = target.parentElement;
+      const parent = target.parent();
+      if (parent.length) target = parent;
       else break;
     }
-    target?.remove();
+    target.remove();
   },
+  // 文字清理工具
   cleanMatch: (str) => {
     if (!str) return "";
     return str
@@ -75,8 +83,8 @@ const Utils = {
       .replace(/[^\w\u4e00-\u9fa5]/g, "")
       .toLowerCase();
   },
+  // 日期工具
   DateHelper: {
-    // 简化后的核心判定逻辑
     checkIsExpired: (dateStr, remainDays) => {
       if (!dateStr) return false;
       const cleanStr = dateStr.trim();
@@ -105,9 +113,8 @@ const Utils = {
 
       return diffDays > remainDays;
     },
-    // 仅用于格式化显示
+    // 仅格式化并返回
     formatDateText: (txt) => {
-      // 原样返回或简单清理，不再进行复杂重构，保持 DOM 清洗的纯粹性
       return txt ? txt.trim() : "";
     }
   },
@@ -143,6 +150,43 @@ class TaskQueue {
   }
 }
 const globalQueue = new TaskQueue();
+
+// 定义全局浏览器
+let sharedBrowser = null;
+let browserTimer = null;
+const IDLE_TIMEOUT = 20 * 60 * 1000; // 20分钟闲置时间
+
+const getBrowser = async () => {
+  // 如果已有实例，清除之前的销毁计时器并返回
+  if (sharedBrowser) {
+    if (browserTimer) clearTimeout(browserTimer);
+    resetBrowserTimer();
+    return sharedBrowser;
+  }
+
+  const isArmUbuntu = process.platform === "linux" && process.arch === "arm64";
+  const ubuntuChrome = "/usr/bin/chromium";
+
+  sharedBrowser = await chromium.launch({
+    executablePath: isArmUbuntu && fs.existsSync(ubuntuChrome) ? ubuntuChrome : undefined,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+  });
+
+  console.log(`[${new Date().toLocaleTimeString()}] Browser Instance Started`);
+  resetBrowserTimer();
+  return sharedBrowser;
+};
+
+const resetBrowserTimer = () => {
+  if (browserTimer) clearTimeout(browserTimer);
+  browserTimer = setTimeout(async () => {
+    if (sharedBrowser) {
+      await sharedBrowser.close();
+      sharedBrowser = null;
+      console.log(`[${new Date().toLocaleTimeString()}] Browser Closed due to inactivity (20min idle)`);
+    }
+  }, IDLE_TIMEOUT);
+};
 
 // =============================================================================
 // 3. 清洗与DOM处理模块 (REFINER)
@@ -194,8 +238,7 @@ const Refiner = {
         });
       }
 
-      Refiner._applyTagging(card, $);
-      Refiner._applyCleaning(card, $);
+      Refiner._refineCard(card, $);
 
       wrapper.append(card);
 
@@ -213,17 +256,21 @@ const Refiner = {
   },
 
   // 样式注入与整理
-  _applyTagging: (card, $) => {
+  _refineCard: (card, $) => {
     card.find("*").each((_, node) => {
       const $node = $(node);
       const txt = $node.text().trim();
-      const tag = node.tagName.toLowerCase();
       const dTag = $node.attr("data-tag");
+      const tag = node.tagName.toLowerCase();
 
-      if (tag === "button" && dTag === "commenter-name" && txt.includes("贝乐斯 ")) {
-        $node.text("贝乐斯");
+      // 注入样式-标题
+      if (tag === "span" && dTag === "post-title") {
+        $node.addClass("TAI-title");
       }
-
+      // 注入样式-评论
+      if (tag === "div" && dTag === "comment-body")
+        $node.parent().addClass("TAI-comment");
+      // 注入样式-正文
       if (tag === "button" && ["展开", "收起"].includes(txt)) {
         const targetBody = $node.closest("div").parent().parent();
         if (targetBody.length) {
@@ -235,51 +282,35 @@ const Refiner = {
             const cleanT = Utils.cleanMatch(titleEl.text());
             targetBody.find("h3, p").each((_, p) => {
               const $p = $(p);
-              if (Utils.cleanMatch($p.text()) === cleanT) $p.remove();
+              if (Utils.cleanMatch($p.text()) === cleanT) Utils.safeRemove($p);
             });
           }
         }
       }
-
-      if (tag === "span" && dTag === "post-title") {
-        $node.addClass("TAI-title");
-        if ($node.parent().prop("tagName") === "A")
-          $node.parent().addClass("TAI-title-link");
+      // 作者名简化
+      if (tag === "button" && dTag === "commenter-name" && txt.includes("贝乐斯 ")) {
+        $node.text("贝乐斯");
       }
-      if (tag === "div" && dTag === "comment-body")
-        $node.parent().addClass("TAI-comment");
-    });
-  },
-
-  // 清除无关内容
-  _applyCleaning: (card, $) => {
-    card.find("*").each((_, node) => {
-      const $node = $(node);
-      const txt = $node.text().trim();
-      const tag = node.tagName.toLowerCase();
-      const dTag = $node.attr("data-tag");
-
+      // 清除评论区头像及登陆账号头像  
       if (tag === "a" && dTag === "comment-avatar-wrapper") {
-        $node.parent().parent().remove();
+        Utils.safeRemove($node, 2);
       } else if (tag === "img" && dTag === "comment-send-avatar") {
-        let t = $node;
-        for (let i = 0; i < 7; i++) t = t.parent();
-        t.remove();
+        Utils.safeRemove($node, 7);
       } else if (
         tag === "div" &&
         ["chip-container", "post-details", "comment-actions"].includes(dTag)
       ) {
         if (dTag === "chip-container") {
-          $node.parent().parent().remove();
+          Utils.safeRemove($node, 2);
         } else {
-          $node.remove();
+          Utils.safeRemove($node);
         }
       } else if (
         tag === "button" &&
         (["展开", "收起", "加载更多留言", "加载回复", "收起回复"].includes(txt) ||
           dTag === "comment-more-actions")
       ) {
-        $node.remove();
+        Utils.safeRemove($node);
       }
     });
   },
@@ -290,34 +321,27 @@ const Refiner = {
 // =============================================================================
 const Converter = {
   execute: async (htmlContent, outputPath, options = {}) => {
-    let browser = null;
+    let context = null;
     const qualityVal = parseFloat(options.quality) || 0.7;
 
     try {
-      const isArmUbuntu = process.platform === "linux" && process.arch === "arm64";
-      const ubuntuChrome = "/usr/bin/chromium";
-
-      browser = await chromium.launch({
-        executablePath: isArmUbuntu && fs.existsSync(ubuntuChrome) ? ubuntuChrome : undefined,
-        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-      });
-
-      const context = await browser.newContext({
+      const browser = await getBrowser();
+      context = await browser.newContext({
         viewport: { width: 414, height: 800 },
         deviceScaleFactor: 2,
       });
       const page = await context.newPage();
       await page.setContent(htmlContent, { waitUntil: "networkidle" });
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(800);
 
-      // 压缩图像
+      // --- 1. 图片压缩逻辑 (保持) ---
       if (qualityVal < 1.0) {
         await page.evaluate(async (q) => {
           for (const img of document.querySelectorAll("img")) {
             try {
+              if (!img.complete || img.naturalWidth === 0) continue;
               const canvas = document.createElement("canvas");
               const ctx = canvas.getContext("2d");
-              if (!img.complete || img.naturalWidth === 0) continue;
               canvas.width = img.naturalWidth;
               canvas.height = img.naturalHeight;
               ctx.fillStyle = "#FFFFFF";
@@ -328,50 +352,64 @@ const Converter = {
           }
         }, qualityVal);
       }
-      // 分页
-      const totalPages = await page.evaluate(() => {
-        const pages = Array.from(document.querySelectorAll("[data-pdf-page]"))
-          .map((el) => parseInt(el.getAttribute("data-pdf-page")) || 0);
-        return pages.length > 0 ? Math.max(...pages) + 1 : 1;
-      });
 
-      const pdfBuffers = [];
-      for (let i = 0; i < totalPages; i++) {
-        const metrics = await page.evaluate((idx) => {
-          const all = document.querySelectorAll("[data-pdf-page]");
-          let hasContent = false;
-          all.forEach((el) => {
-            const isT = el.getAttribute("data-pdf-page") == String(idx);
-            el.style.setProperty("display", isT ? "block" : "none", "important");
-            if (isT) hasContent = true;
-          });
-          return { height: document.body.scrollHeight, hasContent };
-        }, i);
+      // --- 2. 核心：按 TAI-separator 切片渲染 (解决分页高度不等问题) ---
+      const isSinglePage = options.paginationMode === "single";
+      const mergedPdf = await PDFDocument.create(); // 准备主文档
 
-        if (!metrics.hasContent || metrics.height < 20) continue;
-        pdfBuffers.push(
-          await page.pdf({
-            width: "414px",
-            height: `${metrics.height}px`,
-            printBackground: true,
-            pageRanges: "1",
-          }),
-        );
-      }
-      // 合并 PDF
-      const mergedPdf = await PDFDocument.create();
-      for (const buf of pdfBuffers) {
+      if (isSinglePage) {
+        const totalHeight = await page.evaluate(() => document.body.scrollHeight);
+        const buf = await page.pdf({
+          width: "414px",
+          height: `${totalHeight}px`,
+          printBackground: true,
+        });
         const doc = await PDFDocument.load(buf);
         const [p] = await mergedPdf.copyPages(doc, [0]);
         mergedPdf.addPage(p);
+      } else {
+        const pagesCount = await page.evaluate(() => document.querySelectorAll('.TAI-separator').length);
+
+        for (let i = 0; i < pagesCount; i++) {
+          const height = await page.evaluate((idx) => {
+            const allCards = document.querySelectorAll('[data-pdf-page]');
+            allCards.forEach(el => {
+              el.style.display = (el.getAttribute('data-pdf-page') == idx) ? "block" : "none";
+            });
+            const rect = document.getElementById('cleaned-main-content').getBoundingClientRect();
+            return Math.ceil(rect.height);
+          }, i);
+
+          if (height < 20) continue;
+          // 生成当前页 Buffer
+          const pageBuf = await page.pdf({
+            width: "414px",
+            height: `${height}px`,
+            printBackground: true,
+            pageRanges: "1",
+            margin: { top: 0, right: 0, bottom: 0, left: 0 }
+          });
+
+          // --- 专家级改动：立刻合并并释放内存 ---
+          const tempDoc = await PDFDocument.load(pageBuf);
+          const [copiedPage] = await mergedPdf.copyPages(tempDoc, [0]);
+          mergedPdf.addPage(copiedPage);
+          // 手动清空当前页引用（提示 GC 回收）
+          // pageBuf 会在下一轮循环开始前自然超出作用域
+        }
       }
-      fs.writeFileSync(outputPath, await mergedPdf.save());
+
+      // 异步写入文件，不阻塞事件循环
+      const finalPdfBytes = await mergedPdf.save();
+      await fs.promises.writeFile(outputPath, finalPdfBytes);
+
       return { success: true };
     } catch (e) {
       console.error("CONVERSION_ERROR:", e);
       return { success: false, error: e.message };
     } finally {
-      if (browser) await browser.close();
+      if (context) await context.close();
+      resetBrowserTimer();
     }
   },
 };
@@ -402,19 +440,19 @@ const startServer = () => {
       reply.send("Error: ui.html not found.");
     }
   });
-  fastify.addHook('preHandler', async (request, reply) => {
+  fastify.addHook('onRequest', async (request, reply) => {
     if (request.url === '/upload' && request.method === 'POST') {
       const token = request.headers['x-access-token'];
-      const EXPECTED_TOKEN = process.env.ACCESS_TOKEN || "refiner_default_pwd_888";
 
-      if (token !== EXPECTED_TOKEN) {
-        reply.code(401).send({ success: false, error: "鉴权失败：Access Token 无效" });
-        return reply; // 立即中断请求，不再接收后续文件流
+      // 使用统一的 GLOBAL_TOKEN
+      if (!token || token !== GLOBAL_TOKEN) {
+        reply.code(401).send({ success: false, error: "鉴权失败：Token 无效或缺失" });
+        return reply;
       }
     }
   });
+
   fastify.post("/upload", async (req, reply) => {
-    const EXPECTED_TOKEN = process.env.ACCESS_TOKEN || "";
     const tempPath = path.join(__dirname, `temp_${Date.now()}.html`);
     let options = {};
 
@@ -429,21 +467,14 @@ const startServer = () => {
         }
       }
 
-      // 1. 鉴权校验
-      if (EXPECTED_TOKEN && options.password !== EXPECTED_TOKEN) {
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-        return { success: false, error: "鉴权失败：Access Token 无效" };
-      }
-
-      // 2. 读取临时文件内容并定义 rawHtml
+      // 读取临时文件内容并定义 rawHtml
       if (!fs.existsSync(tempPath)) {
         throw new Error("文件上传失败，未找到临时文件");
       }
-      const rawHtml = fs.readFileSync(tempPath, "utf8"); // 确保这一行存在
+      const rawHtml = fs.readFileSync(tempPath, "utf8");
 
-      // 3. 进入处理队列
+      // 进入处理队列
       const result = await globalQueue.add(async () => {
-        // 这里的 rawHtml 现在已经有定义了
         const refinedHtml = await Refiner.process(rawHtml, options);
         const finalName = Utils.generateFilename();
         const outputPath = path.join(CONFIG.DIRS.OUT, finalName);

@@ -271,10 +271,10 @@
 
         async function startProcess() {
             const fi = document.getElementById('file-input');
+            // 注意：你代码里的输入框 ID 是 access_token
             const token = document.getElementById('access_token').value;
             if (!fi.files[0]) return;
 
-            // 保存 Token 到本地
             localStorage.setItem('refiner_token', token);
 
             const btn = document.getElementById('main-btn');
@@ -287,7 +287,7 @@
             updateStatus("正在建立连接...");
 
             const fd = new FormData();
-            fd.append('password', token);
+            fd.append('access_token', token);
             fd.append('htmlFile', fi.files[0]);
             // 10-100 映射到 0.1-1.0
             const q = (parseInt(document.getElementById('quality_show').value) / 100).toFixed(1);
@@ -305,13 +305,14 @@
                 if (e.lengthComputable) {
                     const percent = Math.round((e.loaded / e.total) * 100);
                     updateStatus(`上传进度: ${percent}%`);
-                    if (percent === 100) updateStatus("服务器正在清洗并渲染 PDF (通常需 5-15s)...");
+                    if (percent === 100) updateStatus("渲染中,请勿刷新页面");
                 }
             };
 
             xhr.onload = function () {
                 btn.disabled = false;
                 btn.innerText = "选取下一个文件";
+                // --- 修改此段逻辑 ---
                 if (xhr.status === 200) {
                     const res = JSON.parse(xhr.responseText);
                     if (res.success) {
@@ -323,8 +324,15 @@
                         updateStatus("出错: " + res.error);
                     }
                 } else {
-                    updateStatus("网络传输失败");
+                    // 尝试解析 401 或其他错误状态返回的 JSON 信息
+                    try {
+                        const res = JSON.parse(xhr.responseText);
+                        updateStatus(res.error || "请求失败: " + xhr.status);
+                    } catch (e) {
+                        updateStatus("服务器响应异常: " + xhr.status);
+                    }
                 }
+                // ------------------
                 fi.value = "";
             };
 
