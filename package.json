@@ -1,19 +1,22 @@
 {
-  "name": "patreon-refiner",
-  "version": "2.6.0",
-  "description": "High-performance Patreon content refiner and PDF generator",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "@fastify/multipart": "^8.0.0",
-    "@fastify/static": "^7.0.0",
-    "fastify": "^4.24.3",
-    "jsdom": "^22.1.0",
-    "pdf-lib": "^1.17.1",
-    "playwright": "^1.40.0"
-  },
-  "author": "Kelvin",
-  "license": "MIT"
+    "name": "patreon-refiner",
+    "version": "3.0.0",
+    "description": "Insight-driven content refiner for ARM-based VPS deployment",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js"
+    },
+    "dependencies": {
+        "@fastify/multipart": "^8.0.0",
+        "@fastify/static": "^7.0.0",
+        "cheerio": "^1.0.0-rc.12",
+        "fastify": "^4.24.0",
+        "pdf-lib": "^1.17.1",
+        "playwright": "^1.40.0"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    },
+    "author": "Kor6en",
+    "license": "MIT"
 }

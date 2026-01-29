@@ -1,6 +1,7 @@
 node_modules
 public_outputs
 .git
+.env
 .DS_Store
 *.log
 temp_*

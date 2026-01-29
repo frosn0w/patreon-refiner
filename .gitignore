@@ -10,8 +10,8 @@ temp_*.html
 Thumbs.db
 npm-debug.log*
 
-# Docker 缓存 (如果本地构建过)
+# Docker 缓存
 .docker_cache/
 
-# 环境配置文件 (如果你将来使用 .env)
+# 环境配置文件
 .env
