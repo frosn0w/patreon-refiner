@@ -5,7 +5,7 @@ services:
     ports:
       - "10030:3000" # 左侧 10030 可改为你想要的任何 VPS 端口
     environment:
-      - ACCESS_TOKEN=${MY_SECRET_TOKEN}
+      - ACCESS_TOKEN=${ACCESS_TOKEN}
       - NODE_ENV=production
     restart: unless-stopped
     # 解决 Chromium 内存压力问题

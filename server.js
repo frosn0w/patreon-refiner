@@ -18,9 +18,18 @@ const CONFIG = {
   DIRS: { OUT: path.join(__dirname, "public_outputs") },
   SERVER: { PORT: 3000, HOST: "0.0.0.0" },
   // 保持原有样式注入逻辑不变
-  INJECTED_STYLES: (vars) => `
+  INJECTED_STYLES: (vars, useSysFont = false) => `
         body > *:not(#cleaned-main-content) { display: none !important; }
-        :root { --global-borderWidth-thin: 0px !important; }
+        :root { --global-borderWidth-thin: 0px !important; --global-borderWidth-thick: 0px !important; }
+        ${useSysFont ? `
+        * {
+            font-family: "PingFang SC", "Helvetica Neue", Arial, sans-serif !important;
+            font-weight: 400 !important;
+        }
+        h1, h2, h3, h4, h5, h6, strong, b, th {
+            font-weight: 600 !important;
+        }
+        ` : ""}
         #cleaned-main-content {
             display: block !important; /* 改变布局模式，避免 flex 撑开高度 */
             width: 100%;
@@ -248,8 +257,9 @@ const Refiner = {
     });
 
     $("body").empty().append(wrapper);
+    const useSysFont = process.platform === "darwin";
     $("head").append(
-      `<style>${CONFIG.INJECTED_STYLES(CONFIG.DEFAULTS.STYLE_VARS)}</style>`,
+      `<style>${CONFIG.INJECTED_STYLES(CONFIG.DEFAULTS.STYLE_VARS, useSysFont)}</style>`,
     );
 
     return $.html();
@@ -334,12 +344,13 @@ const Converter = {
       await page.setContent(htmlContent, { waitUntil: "networkidle" });
       await page.waitForTimeout(800);
 
-      // --- 1. 图片压缩逻辑 (保持) ---
+      // --- 1. 图片压缩逻辑：替换 src 后等待所有图片 onload 完成再继续 ---
       if (qualityVal < 1.0) {
         await page.evaluate(async (q) => {
-          for (const img of document.querySelectorAll("img")) {
+          const imgs = Array.from(document.querySelectorAll("img"));
+          await Promise.all(imgs.map((img) => new Promise((resolve) => {
             try {
-              if (!img.complete || img.naturalWidth === 0) continue;
+              if (!img.complete || img.naturalWidth === 0) return resolve();
               const canvas = document.createElement("canvas");
               const ctx = canvas.getContext("2d");
               canvas.width = img.naturalWidth;
@@ -347,10 +358,17 @@ const Converter = {
               ctx.fillStyle = "#FFFFFF";
               ctx.fillRect(0, 0, canvas.width, canvas.height);
               ctx.drawImage(img, 0, 0);
-              img.src = canvas.toDataURL("image/jpeg", q);
-            } catch (err) { }
-          }
+              const dataURL = canvas.toDataURL("image/jpeg", q);
+              img.onload = () => resolve();
+              img.onerror = () => resolve(); // 失败时也继续，不阻塞
+              img.src = dataURL;
+            } catch (err) {
+              resolve();
+            }
+          })));
         }, qualityVal);
+        // 压缩完成后额外等待一帧，确保浏览器 reflow 到位
+        await page.waitForTimeout(200);
       }
 
       // --- 2. 核心：按 TAI-separator 切片渲染 (解决分页高度不等问题) ---
@@ -371,14 +389,18 @@ const Converter = {
         const pagesCount = await page.evaluate(() => document.querySelectorAll('.TAI-separator').length);
 
         for (let i = 0; i < pagesCount; i++) {
-          const height = await page.evaluate((idx) => {
+          await page.evaluate((idx) => {
             const allCards = document.querySelectorAll('[data-pdf-page]');
             allCards.forEach(el => {
               el.style.display = (el.getAttribute('data-pdf-page') == idx) ? "block" : "none";
             });
+          }, i);
+          // 等待 display 切换触发浏览器 reflow，再读取真实高度
+          await page.waitForTimeout(80);
+          const height = await page.evaluate(() => {
             const rect = document.getElementById('cleaned-main-content').getBoundingClientRect();
             return Math.ceil(rect.height);
-          }, i);
+          });
 
           if (height < 20) continue;
           // 生成当前页 Buffer
