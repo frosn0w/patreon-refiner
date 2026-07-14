@@ -344,32 +344,54 @@ const Converter = {
       await page.setContent(htmlContent, { waitUntil: "networkidle" });
       await page.waitForTimeout(800);
 
-      // --- 2. 浏览器层二次压缩：图片已同源，canvas 可正常操作 ---
+      // --- 2. Node 层图片压缩（用 sharp，绕开 VPS 上 --disable-gpu 导致 canvas toDataURL quality 失效的问题）---
       if (qualityVal < 1.0) {
-        await page.evaluate(async (q) => {
-          const imgs = Array.from(document.querySelectorAll("img"));
-          await Promise.all(imgs.map((img) => new Promise((resolve) => {
+        const sharp = require("sharp");
+        const jpegQuality = Math.round(qualityVal * 100);
+
+        // 从页面取出所有 img 的 src（base64）
+        const imgSrcs = await page.evaluate(() =>
+          Array.from(document.querySelectorAll("img")).map((img, i) => ({
+            index: i,
+            src: img.src,
+            complete: img.complete,
+            naturalWidth: img.naturalWidth,
+          }))
+        );
+
+        // Node 层并发压缩
+        const compressed = await Promise.all(
+          imgSrcs.map(async ({ index, src, complete, naturalWidth }) => {
+            if (!complete || naturalWidth === 0) return { index, dataURL: null };
+            if (!src.startsWith("data:image")) return { index, dataURL: null };
             try {
-              if (!img.complete || img.naturalWidth === 0) return resolve();
-              const canvas = document.createElement("canvas");
-              const ctx = canvas.getContext("2d");
-              canvas.width = img.naturalWidth;
-              canvas.height = img.naturalHeight;
-              ctx.fillStyle = "#FFFFFF";
-              ctx.fillRect(0, 0, canvas.width, canvas.height);
-              ctx.drawImage(img, 0, 0);
-              const dataURL = canvas.toDataURL("image/jpeg", q);
+              const base64Data = src.replace(/^data:image\/\w+;base64,/, "");
+              const buf = Buffer.from(base64Data, "base64");
+              const outBuf = await sharp(buf)
+                .jpeg({ quality: jpegQuality, mozjpeg: false })
+                .toBuffer();
+              return { index, dataURL: `data:image/jpeg;base64,${outBuf.toString("base64")}` };
+            } catch {
+              return { index, dataURL: null };
+            }
+          })
+        );
+
+        // 将压缩结果注回页面，等待所有图片 onload
+        const validResults = compressed.filter((r) => r.dataURL !== null);
+        if (validResults.length > 0) {
+          await page.evaluate((results) => {
+            const imgs = Array.from(document.querySelectorAll("img"));
+            return Promise.all(results.map(({ index, dataURL }) => new Promise((resolve) => {
+              const img = imgs[index];
+              if (!img) return resolve();
               img.onload = () => resolve();
               img.onerror = () => resolve();
-              // 注意：onload 必须在赋值 src 之前挂好，base64 图片可能同步触发 onload
-              // 但如果图片已是同一 dataURL（极少），src 赋值不会触发 onload，需兜底
-              if (img.src === dataURL) { resolve(); } else { img.src = dataURL; }
-            } catch (err) {
-              resolve();
-            }
-          })));
-        }, qualityVal);
-        await page.waitForTimeout(200);
+              img.src = dataURL;
+            })));
+          }, validResults);
+          await page.waitForTimeout(200);
+        }
       }
 
       // --- 2. 核心：按 TAI-separator 切片渲染 (解决分页高度不等问题) ---

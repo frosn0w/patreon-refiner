@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     fonts-noto-color-emoji \
     fontconfig \
     dumb-init \
+    libvips-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. 刷新字体缓存
