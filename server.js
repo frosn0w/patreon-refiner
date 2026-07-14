@@ -1,5 +1,5 @@
 /**
- * PATREON REFINER // SPLIT ARCHITECTURE (V3.0)
+ * PATREON REFINER // SPLIT ARCHITECTURE (V3.0.1 - STABLE VIA VPS)
  * Server Side
  */
 
@@ -17,7 +17,6 @@ const GLOBAL_TOKEN = process.env.ACCESS_TOKEN;
 const CONFIG = {
   DIRS: { OUT: path.join(__dirname, "public_outputs") },
   SERVER: { PORT: 3000, HOST: "0.0.0.0" },
-  // 保持原有样式注入逻辑不变
   INJECTED_STYLES: (vars, useSysFont = false) => `
         body > *:not(#cleaned-main-content) { display: none !important; }
         :root { --global-borderWidth-thin: 0px !important; --global-borderWidth-thick: 0px !important; }
@@ -35,7 +34,7 @@ const CONFIG = {
         }
         `}
         #cleaned-main-content {
-            display: block !important; /* 改变布局模式，避免 flex 撑开高度 */
+            display: block !important;
             width: 100%;
             padding-top: ${vars["top-dist"]};
             background-color: ${vars["page-bg"]};
@@ -45,7 +44,6 @@ const CONFIG = {
             font-size: ${vars["title-font-size"]} !important; 
         }
         div[data-tag="post-card"] { background-color: ${vars["card-bg"]} !important; width: 100%; }
-        /* 定义分割线样式，并强制 PDF 在此处分页 */
         .TAI-body div div { height: auto !important; }
         .TAI-body h3 { font-size: ${vars["subtitle-font-size"]} !important; }
         .TAI-comment { border-radius: 8px !important; }
@@ -68,7 +66,6 @@ const CONFIG = {
 // 2. 工具模块 (UTILS)
 // =============================================================================
 const Utils = {
-  // 初始化环境
   initEnvironment: () => {
     if (fs.existsSync(CONFIG.DIRS.OUT))
       fs.rmSync(CONFIG.DIRS.OUT, { recursive: true, force: true });
@@ -78,7 +75,6 @@ const Utils = {
     const now = new Date();
     return `BLS${String(now.getFullYear()).slice(-2)}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}.pdf`;
   },
-  // 安全移除工具
   safeRemove: ($el, upLevel = 0) => {
     let target = $el;
     for (let i = 0; i < upLevel; i++) {
@@ -88,7 +84,6 @@ const Utils = {
     }
     target.remove();
   },
-  // 文字清理工具
   cleanMatch: (str) => {
     if (!str) return "";
     return str
@@ -96,15 +91,12 @@ const Utils = {
       .replace(/[^\w\u4e00-\u9fa5]/g, "")
       .toLowerCase();
   },
-  // 日期工具
   DateHelper: {
     checkIsExpired: (dateStr, remainDays) => {
       if (!dateStr) return false;
       const cleanStr = dateStr.trim();
-
-      // 提取 mm 和 dd
       const match = cleanStr.match(/(\d{1,2})月(\d{1,2})日/);
-      if (!match) return false; // 格式不符合的日期均保留
+      if (!match) return false;
 
       const m = parseInt(match[1], 10);
       const d = parseInt(match[2], 10);
@@ -112,20 +104,16 @@ const Utils = {
       const now = new Date();
       const curM = now.getMonth() + 1;
       const curYear = now.getFullYear();
-
-      // 年份推断逻辑：如果帖子月份大于当前月份，说明是去年的帖子
       const year = m > curM ? curYear - 1 : curYear;
 
-      // 构造日期对象进行纯天数计算
       const postDate = new Date(year, m - 1, d);
-      const today = new Date(curYear, now.getMonth(), now.getDate()); // 归零时分秒
+      const today = new Date(curYear, now.getMonth(), now.getDate());
 
       const diffTime = today - postDate;
       const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
       return diffDays > remainDays;
     },
-    // 仅格式化并返回
     formatDateText: (txt) => {
       return txt ? txt.trim() : "";
     }
@@ -163,10 +151,9 @@ class TaskQueue {
 }
 const globalQueue = new TaskQueue();
 
-// 定义全局浏览器
 let sharedBrowser = null;
 let browserTimer = null;
-const IDLE_TIMEOUT = 20 * 60 * 1000; // 20分钟闲置时间
+const IDLE_TIMEOUT = 20 * 60 * 1000;
 
 const getBrowser = async () => {
   if (sharedBrowser) {
@@ -175,8 +162,6 @@ const getBrowser = async () => {
     return sharedBrowser;
   }
 
-  // Docker 容器下 Playwright 推荐使用其内置的 Chromium 二进制文件即可，
-  // 仅在本地非 Docker Linux 上可能需要指定系统路径 /usr/bin/chromium
   const isArmUbuntu = process.platform === "linux" && process.arch === "arm64";
   const ubuntuChrome = "/usr/bin/chromium";
   const hasLocalChrome = fs.existsSync(ubuntuChrome);
@@ -214,6 +199,42 @@ const Refiner = {
     const remainDays = parseInt(options.remainDays) || 0;
     const paginationMode = options.paginationMode || "auto_card";
     const enableLinks = options.enableLinks === "true";
+    const qualityVal = parseFloat(options.quality) || 0.7;
+
+    // --- 在 DOM 清洗阶段提前在 Node 层压缩图片 ---
+    if (qualityVal < 1.0) {
+      let sharp;
+      try {
+        sharp = require("sharp");
+      } catch (err) {
+        console.error("⛔ [Fatal] 无法加载 sharp 模块:", err.message);
+      }
+
+      if (sharp) {
+        const jpegQuality = Math.round(qualityVal * 100);
+        const imgElements = $('img').toArray();
+        let successCount = 0;
+
+        for (const el of imgElements) {
+          const $img = $(el);
+          const src = $img.attr('src');
+          if (src && src.startsWith('data:image')) {
+            try {
+              const base64Data = src.replace(/^data:image\/\w+;base64,/, "");
+              const buf = Buffer.from(base64Data, "base64");
+              const outBuf = await sharp(buf)
+                .jpeg({ quality: jpegQuality, mozjpeg: false })
+                .toBuffer();
+              $img.attr('src', `data:image/jpeg;base64,${outBuf.toString("base64")}`);
+              successCount++;
+            } catch (err) {
+              console.error(`⚠️ [Sharp Exception] 压缩 HTML 图片失败:`, err.message);
+            }
+          }
+        }
+        console.log(`ℹ️ [Sharp Worker] 节点层处理完毕，成功压缩 ${successCount} 张图片。`);
+      }
+    }
 
     const wrapper = $('<div id="cleaned-main-content"></div>');
     let pageIdx = 0;
@@ -223,12 +244,10 @@ const Refiner = {
       const dateEl = card.find(CONFIG.DEFAULTS.DATE_TAG);
       const dateTxt = dateEl.text().trim();
 
-      // 时效性过滤
       if (Utils.DateHelper.checkIsExpired(dateTxt, remainDays)) {
         return;
       }
 
-      // 分页逻辑
       if (i !== 0 && paginationMode === "auto_card") {
         pageIdx++;
       }
@@ -253,7 +272,6 @@ const Refiner = {
       }
 
       Refiner._refineCard(card, $);
-
       wrapper.append(card);
 
       const sep = $('<div class="TAI-separator"></div>');
@@ -277,14 +295,11 @@ const Refiner = {
       const dTag = $node.attr("data-tag");
       const tag = node.tagName.toLowerCase();
 
-      // 注入样式-标题
       if (tag === "span" && dTag === "post-title") {
         $node.addClass("TAI-title");
       }
-      // 注入样式-评论
       if (tag === "div" && dTag === "comment-body")
         $node.parent().addClass("TAI-comment");
-      // 注入样式-正文
       if (tag === "button" && ["展开", "收起"].includes(txt)) {
         const targetBody = $node.closest("div").parent().parent();
         if (targetBody.length) {
@@ -301,11 +316,9 @@ const Refiner = {
           }
         }
       }
-      // 作者名简化
       if (tag === "button" && dTag === "commenter-name" && txt.includes("贝乐斯 ")) {
         $node.text("贝乐斯");
-      }
-      // 清除评论区头像及登陆账号头像  
+      } 
       if (tag === "a" && dTag === "comment-avatar-wrapper") {
         Utils.safeRemove($node, 2);
       } else if (tag === "img" && dTag === "comment-send-avatar") {
@@ -336,7 +349,6 @@ const Refiner = {
 const Converter = {
   execute: async (htmlContent, outputPath, options = {}) => {
     let context = null;
-    const qualityVal = parseFloat(options.quality) || 0.7;
 
     try {
       const browser = await getBrowser();
@@ -345,70 +357,11 @@ const Converter = {
         deviceScaleFactor: 2,
       });
       const page = await context.newPage();
+      
+      // 此时得到的 htmlContent 已经是内部被 Sharp 压缩过图源的 HTML
       await page.setContent(htmlContent, { waitUntil: "networkidle" });
-      await page.waitForTimeout(800);
+      await page.waitForTimeout(500);
 
-      // --- 2. Node 层图片压缩 ---
-      if (qualityVal < 1.0) {
-        let sharp;
-        try {
-          sharp = require("sharp");
-        } catch (sharpLoadErr) {
-          console.error("⛔ [Fatal Error] 无法加载 sharp 模块！请确认依赖或原生二进制编译是否正确。错误原因：", sharpLoadErr.message);
-        }
-
-        if (sharp) {
-          const jpegQuality = Math.round(qualityVal * 100);
-
-          // 从页面取出所有 img 的 src
-          const imgSrcs = await page.evaluate(() =>
-            Array.from(document.querySelectorAll("img")).map((img, i) => ({
-              index: i,
-              src: img.src
-            }))
-          );
-
-          // Node 层并发压缩
-          const compressed = await Promise.all(
-            imgSrcs.map(async ({ index, src }) => {
-              // 过滤非 Base64 的图片
-              if (!src || !src.startsWith("data:image")) return { index, dataURL: null };
-              try {
-                const base64Data = src.replace(/^data:image\/\w+;base64,/, "");
-                const buf = Buffer.from(base64Data, "base64");
-                const outBuf = await sharp(buf)
-                  .jpeg({ quality: jpegQuality, mozjpeg: false })
-                  .toBuffer();
-                return { index, dataURL: `data:image/jpeg;base64,${outBuf.toString("base64")}` };
-              } catch (err) {
-                // 打印图片处理出错细节（如果是图片损坏等原因）
-                console.error(`⚠️ [Sharp Exception] 处理第 ${index} 张图片时发生错误:`, err.message);
-                return { index, dataURL: null };
-              }
-            })
-          );
-
-          const validResults = compressed.filter((r) => r.dataURL !== null);
-          console.log(`ℹ️ [Sharp Worker] 页面共有 ${imgSrcs.length} 张图片，成功压缩 ${validResults.length} 张图片。`);
-
-          // 将压缩结果注回页面，等待所有图片加载完毕
-          if (validResults.length > 0) {
-            await page.evaluate((results) => {
-              const imgs = Array.from(document.querySelectorAll("img"));
-              return Promise.all(results.map(({ index, dataURL }) => new Promise((resolve) => {
-                const img = imgs[index];
-                if (!img) return resolve();
-                img.onload = () => resolve();
-                img.onerror = () => resolve();
-                img.src = dataURL;
-              })));
-            }, validResults);
-            await page.waitForTimeout(200);
-          }
-        }
-      }
-
-      // --- 3. 按 TAI-separator 切片渲染 ---
       const isSinglePage = options.paginationMode === "single";
       const mergedPdf = await PDFDocument.create(); 
 
@@ -433,7 +386,7 @@ const Converter = {
             });
           }, i);
           
-          await page.waitForTimeout(80);
+          await page.waitForTimeout(60);
           const height = await page.evaluate(() => {
             const rect = document.getElementById('cleaned-main-content').getBoundingClientRect();
             return Math.ceil(rect.height);
@@ -484,7 +437,6 @@ const startServer = () => {
     limits: { fileSize: 150 * 1024 * 1024 },
   });
 
-  // 读取分离的 UI 文件
   const UI_PATH = path.join(__dirname, "ui.html");
 
   fastify.get("/", async (req, reply) => {
@@ -495,11 +447,10 @@ const startServer = () => {
       reply.send("Error: ui.html not found.");
     }
   });
+
   fastify.addHook('onRequest', async (request, reply) => {
     if (request.url === '/upload' && request.method === 'POST') {
       const token = request.headers['x-access-token'];
-
-      // 使用统一的 GLOBAL_TOKEN
       if (!token || token !== GLOBAL_TOKEN) {
         reply.code(401).send({ success: false, error: "鉴权失败：Token 无效或缺失" });
         return reply;
@@ -522,13 +473,11 @@ const startServer = () => {
         }
       }
 
-      // 读取临时文件内容并定义 rawHtml
       if (!fs.existsSync(tempPath)) {
         throw new Error("文件上传失败，未找到临时文件");
       }
       const rawHtml = fs.readFileSync(tempPath, "utf8");
 
-      // 进入处理队列
       const result = await globalQueue.add(async () => {
         const refinedHtml = await Refiner.process(rawHtml, options);
         const finalName = Utils.generateFilename();
