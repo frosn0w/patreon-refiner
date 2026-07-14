@@ -29,7 +29,11 @@ const CONFIG = {
         h1, h2, h3, h4, h5, h6, strong, b, th {
             font-weight: 600 !important;
         }
-        ` : ""}
+        ` : `
+        * {
+            font-family: "Noto Sans CJK SC", "PingFang SC", "Helvetica Neue", Arial, sans-serif !important;
+        }
+        `}
         #cleaned-main-content {
             display: block !important; /* 改变布局模式，避免 flex 撑开高度 */
             width: 100%;
@@ -110,7 +114,6 @@ const Utils = {
       const curYear = now.getFullYear();
 
       // 年份推断逻辑：如果帖子月份大于当前月份，说明是去年的帖子
-      // (例如：现在1月，帖子是12月，则帖子是去年的)
       const year = m > curM ? curYear - 1 : curYear;
 
       // 构造日期对象进行纯天数计算
@@ -166,18 +169,20 @@ let browserTimer = null;
 const IDLE_TIMEOUT = 20 * 60 * 1000; // 20分钟闲置时间
 
 const getBrowser = async () => {
-  // 如果已有实例，清除之前的销毁计时器并返回
   if (sharedBrowser) {
     if (browserTimer) clearTimeout(browserTimer);
     resetBrowserTimer();
     return sharedBrowser;
   }
 
+  // Docker 容器下 Playwright 推荐使用其内置的 Chromium 二进制文件即可，
+  // 仅在本地非 Docker Linux 上可能需要指定系统路径 /usr/bin/chromium
   const isArmUbuntu = process.platform === "linux" && process.arch === "arm64";
   const ubuntuChrome = "/usr/bin/chromium";
+  const hasLocalChrome = fs.existsSync(ubuntuChrome);
 
   sharedBrowser = await chromium.launch({
-    executablePath: isArmUbuntu && fs.existsSync(ubuntuChrome) ? ubuntuChrome : undefined,
+    executablePath: (isArmUbuntu && hasLocalChrome) ? ubuntuChrome : undefined,
     args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
   });
 
@@ -218,7 +223,7 @@ const Refiner = {
       const dateEl = card.find(CONFIG.DEFAULTS.DATE_TAG);
       const dateTxt = dateEl.text().trim();
 
-      // 时效性过滤 (调用简化的日期逻辑)
+      // 时效性过滤
       if (Utils.DateHelper.checkIsExpired(dateTxt, remainDays)) {
         return;
       }
@@ -265,7 +270,6 @@ const Refiner = {
     return $.html();
   },
 
-  // 样式注入与整理
   _refineCard: (card, $) => {
     card.find("*").each((_, node) => {
       const $node = $(node);
@@ -344,59 +348,69 @@ const Converter = {
       await page.setContent(htmlContent, { waitUntil: "networkidle" });
       await page.waitForTimeout(800);
 
-      // --- 2. Node 层图片压缩（用 sharp，绕开 VPS 上 --disable-gpu 导致 canvas toDataURL quality 失效的问题）---
+      // --- 2. Node 层图片压缩 ---
       if (qualityVal < 1.0) {
-        const sharp = require("sharp");
-        const jpegQuality = Math.round(qualityVal * 100);
+        let sharp;
+        try {
+          sharp = require("sharp");
+        } catch (sharpLoadErr) {
+          console.error("⛔ [Fatal Error] 无法加载 sharp 模块！请确认依赖或原生二进制编译是否正确。错误原因：", sharpLoadErr.message);
+        }
 
-        // 从页面取出所有 img 的 src（base64）
-        const imgSrcs = await page.evaluate(() =>
-          Array.from(document.querySelectorAll("img")).map((img, i) => ({
-            index: i,
-            src: img.src,
-            complete: img.complete,
-            naturalWidth: img.naturalWidth,
-          }))
-        );
+        if (sharp) {
+          const jpegQuality = Math.round(qualityVal * 100);
 
-        // Node 层并发压缩
-        const compressed = await Promise.all(
-          imgSrcs.map(async ({ index, src, complete, naturalWidth }) => {
-            if (!complete || naturalWidth === 0) return { index, dataURL: null };
-            if (!src.startsWith("data:image")) return { index, dataURL: null };
-            try {
-              const base64Data = src.replace(/^data:image\/\w+;base64,/, "");
-              const buf = Buffer.from(base64Data, "base64");
-              const outBuf = await sharp(buf)
-                .jpeg({ quality: jpegQuality, mozjpeg: false })
-                .toBuffer();
-              return { index, dataURL: `data:image/jpeg;base64,${outBuf.toString("base64")}` };
-            } catch {
-              return { index, dataURL: null };
-            }
-          })
-        );
+          // 从页面取出所有 img 的 src
+          const imgSrcs = await page.evaluate(() =>
+            Array.from(document.querySelectorAll("img")).map((img, i) => ({
+              index: i,
+              src: img.src
+            }))
+          );
 
-        // 将压缩结果注回页面，等待所有图片 onload
-        const validResults = compressed.filter((r) => r.dataURL !== null);
-        if (validResults.length > 0) {
-          await page.evaluate((results) => {
-            const imgs = Array.from(document.querySelectorAll("img"));
-            return Promise.all(results.map(({ index, dataURL }) => new Promise((resolve) => {
-              const img = imgs[index];
-              if (!img) return resolve();
-              img.onload = () => resolve();
-              img.onerror = () => resolve();
-              img.src = dataURL;
-            })));
-          }, validResults);
-          await page.waitForTimeout(200);
+          // Node 层并发压缩
+          const compressed = await Promise.all(
+            imgSrcs.map(async ({ index, src }) => {
+              // 过滤非 Base64 的图片
+              if (!src || !src.startsWith("data:image")) return { index, dataURL: null };
+              try {
+                const base64Data = src.replace(/^data:image\/\w+;base64,/, "");
+                const buf = Buffer.from(base64Data, "base64");
+                const outBuf = await sharp(buf)
+                  .jpeg({ quality: jpegQuality, mozjpeg: false })
+                  .toBuffer();
+                return { index, dataURL: `data:image/jpeg;base64,${outBuf.toString("base64")}` };
+              } catch (err) {
+                // 打印图片处理出错细节（如果是图片损坏等原因）
+                console.error(`⚠️ [Sharp Exception] 处理第 ${index} 张图片时发生错误:`, err.message);
+                return { index, dataURL: null };
+              }
+            })
+          );
+
+          const validResults = compressed.filter((r) => r.dataURL !== null);
+          console.log(`ℹ️ [Sharp Worker] 页面共有 ${imgSrcs.length} 张图片，成功压缩 ${validResults.length} 张图片。`);
+
+          // 将压缩结果注回页面，等待所有图片加载完毕
+          if (validResults.length > 0) {
+            await page.evaluate((results) => {
+              const imgs = Array.from(document.querySelectorAll("img"));
+              return Promise.all(results.map(({ index, dataURL }) => new Promise((resolve) => {
+                const img = imgs[index];
+                if (!img) return resolve();
+                img.onload = () => resolve();
+                img.onerror = () => resolve();
+                img.src = dataURL;
+              })));
+            }, validResults);
+            await page.waitForTimeout(200);
+          }
         }
       }
 
-      // --- 2. 核心：按 TAI-separator 切片渲染 (解决分页高度不等问题) ---
+      // --- 3. 按 TAI-separator 切片渲染 ---
       const isSinglePage = options.paginationMode === "single";
-      const mergedPdf = await PDFDocument.create(); // 准备主文档
+      const mergedPdf = await PDFDocument.create(); 
 
       if (isSinglePage) {
         const totalHeight = await page.evaluate(() => document.body.scrollHeight);
@@ -418,7 +432,7 @@ const Converter = {
               el.style.display = (el.getAttribute('data-pdf-page') == idx) ? "block" : "none";
             });
           }, i);
-          // 等待 display 切换触发浏览器 reflow，再读取真实高度
+          
           await page.waitForTimeout(80);
           const height = await page.evaluate(() => {
             const rect = document.getElementById('cleaned-main-content').getBoundingClientRect();
@@ -426,7 +440,7 @@ const Converter = {
           });
 
           if (height < 20) continue;
-          // 生成当前页 Buffer
+          
           const pageBuf = await page.pdf({
             width: "414px",
             height: `${height}px`,
@@ -435,16 +449,12 @@ const Converter = {
             margin: { top: 0, right: 0, bottom: 0, left: 0 }
           });
 
-          // --- 专家级改动：立刻合并并释放内存 ---
           const tempDoc = await PDFDocument.load(pageBuf);
           const [copiedPage] = await mergedPdf.copyPages(tempDoc, [0]);
           mergedPdf.addPage(copiedPage);
-          // 手动清空当前页引用（提示 GC 回收）
-          // pageBuf 会在下一轮循环开始前自然超出作用域
         }
       }
 
-      // 异步写入文件，不阻塞事件循环
       const finalPdfBytes = await mergedPdf.save();
       await fs.promises.writeFile(outputPath, finalPdfBytes);
 
