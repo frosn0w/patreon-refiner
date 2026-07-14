@@ -344,7 +344,7 @@ const Converter = {
       await page.setContent(htmlContent, { waitUntil: "networkidle" });
       await page.waitForTimeout(800);
 
-      // --- 1. 图片压缩逻辑：替换 src 后等待所有图片 onload 完成再继续 ---
+      // --- 2. 浏览器层二次压缩：图片已同源，canvas 可正常操作 ---
       if (qualityVal < 1.0) {
         await page.evaluate(async (q) => {
           const imgs = Array.from(document.querySelectorAll("img"));
@@ -360,14 +360,15 @@ const Converter = {
               ctx.drawImage(img, 0, 0);
               const dataURL = canvas.toDataURL("image/jpeg", q);
               img.onload = () => resolve();
-              img.onerror = () => resolve(); // 失败时也继续，不阻塞
-              img.src = dataURL;
+              img.onerror = () => resolve();
+              // 注意：onload 必须在赋值 src 之前挂好，base64 图片可能同步触发 onload
+              // 但如果图片已是同一 dataURL（极少），src 赋值不会触发 onload，需兜底
+              if (img.src === dataURL) { resolve(); } else { img.src = dataURL; }
             } catch (err) {
               resolve();
             }
           })));
         }, qualityVal);
-        // 压缩完成后额外等待一帧，确保浏览器 reflow 到位
         await page.waitForTimeout(200);
       }
 
